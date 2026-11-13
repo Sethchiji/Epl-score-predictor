@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .model import DEFAULT_XI, fit_poisson
+from .model import DEFAULT_SHRINKAGE, DEFAULT_XI, fit_poisson
 
 OUTCOMES = ["H", "D", "A"]
 
@@ -37,7 +37,7 @@ def _metrics(probs: pd.DataFrame, results: pd.Series) -> dict:
 
 
 def backtest(matches: pd.DataFrame, test_season: str, xi: float = DEFAULT_XI,
-             refit_every_days: int = 7) -> pd.DataFrame:
+             shrinkage: float = DEFAULT_SHRINKAGE, refit_every_days: int = 7) -> pd.DataFrame:
     """Walk-forward test: for each week of `test_season`, fit only on earlier matches, then predict that week.
 
     Returns one row per predicted match with the model's probabilities and the actual result.
@@ -54,7 +54,7 @@ def backtest(matches: pd.DataFrame, test_season: str, xi: float = DEFAULT_XI,
         window_end = window_start + pd.Timedelta(days=refit_every_days)
         week = test[(test["Date"] >= window_start) & (test["Date"] < window_end)]
         if not week.empty:
-            model = fit_poisson(matches, as_of=window_start, xi=xi)
+            model = fit_poisson(matches, as_of=window_start, xi=xi, shrinkage=shrinkage)
             for _, m in week.iterrows():
                 if m["HomeTeam"] not in model.teams or m["AwayTeam"] not in model.teams:
                     continue  # e.g. a promoted team with no prior data in the window
