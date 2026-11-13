@@ -12,7 +12,7 @@ import plotly.express as px
 import streamlit as st
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # so "src" can be imported
-from src.data import BIG_SIX, load_recent  # noqa: E402
+from src.data import BIG_SIX, load_fixtures, load_recent  # noqa: E402
 from src.model import fit_poisson  # noqa: E402
 
 st.set_page_config(page_title="EPL Score Predictor", page_icon="⚽", layout="wide")
@@ -21,6 +21,11 @@ st.set_page_config(page_title="EPL Score Predictor", page_icon="⚽", layout="wi
 @st.cache_data(ttl=6 * 60 * 60, show_spinner="Downloading match data...")
 def get_matches(n_seasons: int) -> pd.DataFrame:
     return load_recent(n_seasons)
+
+
+@st.cache_data(ttl=3 * 60 * 60, show_spinner="Checking upcoming fixtures...")
+def get_fixtures() -> pd.DataFrame:
+    return load_fixtures()
 
 
 @st.cache_resource(show_spinner="Fitting the model...")
@@ -47,7 +52,51 @@ st.sidebar.write(f"Trained on **{len(matches):,}** matches up to **{model.as_of:
 st.sidebar.write(f"Home advantage: **{model.home_advantage:.2f}×** goals")
 
 big_six = [t for t in BIG_SIX if t in model.teams]
-tab1, tab2, tab3 = st.tabs(["Big Six head-to-head", "Match predictor", "Team ratings"])
+tab0, tab1, tab2, tab3 = st.tabs(["Upcoming fixtures", "Big Six head-to-head", "Match predictor", "Team ratings"])
+
+with tab0:
+    st.subheader("Next Premier League fixtures")
+    try:
+        fx = get_fixtures()
+    except Exception as exc:  # site down or format changed: don't break the rest of the app
+        fx = None
+        st.warning(f"Couldn't load the fixtures file right now ({exc}). The other tabs still work.")
+    if fx is not None and fx.empty:
+        st.info("No Premier League fixtures in the upcoming-fixtures file yet. It only covers the next few days "
+                "of matches, so the next round appears shortly before matchday. Meanwhile, use the "
+                "**Match predictor** tab for any matchup.")
+    elif fx is not None:
+        known = fx["HomeTeam"].isin(model.teams) & fx["AwayTeam"].isin(model.teams)
+        preds = model.predict_fixtures(fx[known]).set_index(fx[known].index)
+        table = pd.concat([fx[known][["Date"] + (["Time"] if "Time" in fx.columns else [])], preds], axis=1)
+        if {"B365H", "B365D", "B365A"}.issubset(fx.columns):
+            inv = 1 / fx.loc[known, ["B365H", "B365D", "B365A"]].astype(float)
+            table["bookie_home"] = (inv["B365H"] / inv.sum(axis=1)).values
+        table["big_six"] = table["home_team"].isin(BIG_SIX) | table["away_team"].isin(BIG_SIX)
+        only_big6 = st.toggle("Big Six matches only", value=False)
+        if only_big6:
+            table = table[table["big_six"]]
+        cols = ["Date"] + (["Time"] if "Time" in table.columns else []) + [
+            "home_team", "away_team", "p_home", "p_draw", "p_away", "most_likely_score"]
+        labels = {"home_team": "Home", "away_team": "Away", "p_home": "Home win", "p_draw": "Draw",
+                  "p_away": "Away win", "most_likely_score": "Most likely score"}
+        if "bookie_home" in table.columns:
+            cols.append("bookie_home")
+        fmt = {c: "{:.0%}" for c in ["p_home", "p_draw", "p_away", "bookie_home"] if c in cols}
+        fmt["Date"] = lambda d: d.strftime("%a %d %b")
+        st.dataframe(
+            table[cols].style.format(fmt).apply(
+                lambda r: ["font-weight: bold" if table.loc[r.name, "big_six"] else "" for _ in r], axis=1),
+            width="stretch", hide_index=True,
+            column_config={**{k: st.column_config.Column(v) for k, v in labels.items()},
+                           "bookie_home": st.column_config.Column("Bet365 home %",
+                           help="Bet365's home-win probability (margin removed), for comparison")},
+        )
+        st.caption("**Bold** = Big Six involved. Probabilities are model predictions; "
+                   "the last column shows Bet365's implied home-win chance for comparison.")
+        if (~known).any():
+            st.caption("Skipped (team not in training data): " +
+                       ", ".join(f"{h} vs {a}" for h, a in zip(fx.loc[~known, "HomeTeam"], fx.loc[~known, "AwayTeam"])))
 
 with tab1:
     st.subheader("Every Big Six fixture, predicted")
@@ -55,9 +104,10 @@ with tab1:
     preds = model.predict_fixtures(fixtures)
     show = preds[["home_team", "away_team", "p_home", "p_draw", "p_away",
                   "exp_home_goals", "exp_away_goals", "most_likely_score"]].copy()
+    show.columns = ["Home", "Away", "Home win", "Draw", "Away win", "Exp. home goals", "Exp. away goals", "Most likely score"]
     st.dataframe(
-        show.style.format({c: "{:.0%}" for c in ["p_home", "p_draw", "p_away"]}
-                          | {c: "{:.2f}" for c in ["exp_home_goals", "exp_away_goals"]}),
+        show.style.format({c: "{:.0%}" for c in ["Home win", "Draw", "Away win"]}
+                          | {c: "{:.2f}" for c in ["Exp. home goals", "Exp. away goals"]}),
         width="stretch", hide_index=True,
     )
     pivot = preds.pivot(index="home_team", columns="away_team", values="p_home")
@@ -90,7 +140,8 @@ with tab3:
     st.caption("Attack: goals scored vs. an average team (higher is better). "
                "Defense: goals conceded vs. average (lower is better).")
     ratings = model.team_ratings()
-    st.dataframe(ratings, width="stretch")
+    st.dataframe(ratings.rename(columns={"attack": "Attack", "defense": "Defense", "net_rating": "Net rating"}),
+                 width="stretch")
     fig = px.scatter(ratings.reset_index(names="team"), x="attack", y="defense", text="team",
                      labels={"attack": "Attack (higher = better)", "defense": "Defense (lower = better)"})
     fig.update_yaxes(autorange="reversed")
