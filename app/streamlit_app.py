@@ -24,12 +24,12 @@ def get_matches(n_seasons: int) -> pd.DataFrame:
 
 
 @st.cache_resource(show_spinner="Fitting the model...")
-def get_model(n_seasons: int, xi: float):
-    return fit_poisson(get_matches(n_seasons), xi=xi)
+def get_model(n_seasons: int, xi: float, shrinkage: float):
+    return fit_poisson(get_matches(n_seasons), xi=xi, shrinkage=shrinkage)
 
 
 st.title("⚽ Premier League Score Predictor")
-st.caption("Poisson goals model with time-weighted team attack/defense strengths. "
+st.caption("Poisson goals model with time-weighted, shrinkage-regularised team attack/defense strengths. "
            "Trained on all Premier League matches, focused on the Big Six.")
 
 with st.sidebar:
@@ -38,9 +38,11 @@ with st.sidebar:
     half_life = st.slider("Form half-life (days)", 90, 730, 365, step=15,
                           help="How fast old matches lose influence. 365 = a match from a year ago counts half.")
     xi = 0.6931 / half_life
+    shrinkage = st.slider("Shrinkage", 0.5, 30.0, 5.0, step=0.5,
+                          help="Pulls teams with little data (e.g. newly promoted) toward average. Higher = more cautious.")
 
 matches = get_matches(n_seasons)
-model = get_model(n_seasons, xi)
+model = get_model(n_seasons, xi, shrinkage)
 st.sidebar.write(f"Trained on **{len(matches):,}** matches up to **{model.as_of:%d %b %Y}**")
 st.sidebar.write(f"Home advantage: **{model.home_advantage:.2f}×** goals")
 
@@ -95,4 +97,4 @@ with tab3:
     fig.update_traces(textposition="top center")
     st.plotly_chart(fig, width="stretch")
 
-st.caption("Data: football-data.co.uk · Model: weighted Poisson GLM (statsmodels)")
+st.caption("Data: football-data.co.uk · Model: time-weighted Poisson with ridge shrinkage")
