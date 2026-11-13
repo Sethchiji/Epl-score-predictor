@@ -68,3 +68,26 @@ def load_recent(n_seasons: int = 4, today: date | None = None) -> pd.DataFrame:
     """The current season plus the previous (n_seasons - 1) seasons."""
     current = current_season_start(today)
     return load_seasons(list(range(current - n_seasons + 1, current + 1)))
+
+
+# ---------------------------------------------------------------- upcoming fixtures
+FIXTURES_URL = os.environ.get("FOOTBALL_DATA_FIXTURES_URL", "https://www.football-data.co.uk/fixtures.csv")
+
+
+def load_fixtures() -> pd.DataFrame:
+    """Upcoming Premier League fixtures (the file only covers the next few days of matches).
+
+    The file starts with a hidden BOM character, so we read it as 'utf-8-sig' to keep the
+    first column named 'Div' (with latin1 it becomes 'ï»¿Div').
+    """
+    fx = pd.read_csv(FIXTURES_URL, encoding="utf-8-sig", on_bad_lines="skip")
+    fx.columns = [c.strip().lstrip("﻿") for c in fx.columns]
+    if "Div" not in fx.columns:
+        raise ValueError(f"Unexpected fixtures file format. Columns: {fx.columns.tolist()[:8]}")
+    fx = fx[fx["Div"] == LEAGUE].copy()
+    keep = ["Date", "Time", "HomeTeam", "AwayTeam"] + [c for c in ["B365H", "B365D", "B365A"] if c in fx.columns]
+    fx = fx[[c for c in keep if c in fx.columns]]
+    fx["Date"] = pd.to_datetime(fx["Date"], dayfirst=True, errors="coerce")
+    fx["HomeTeam"] = fx["HomeTeam"].str.strip()
+    fx["AwayTeam"] = fx["AwayTeam"].str.strip()
+    return fx.dropna(subset=["Date"]).sort_values(["Date", "Time" if "Time" in fx.columns else "Date"]).reset_index(drop=True)
