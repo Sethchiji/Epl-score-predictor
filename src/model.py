@@ -31,6 +31,34 @@ DEFAULT_XI = 0.0019
 DEFAULT_SHRINKAGE = 5.0
 
 
+def markets_from_matrix(m: np.ndarray) -> dict:
+    """Turn a scoreline probability grid into common market probabilities.
+
+    m[i, j] = P(home scores i, away scores j). Every market is just a different way of
+    adding up cells of this grid, so no extra modelling is needed.
+    """
+    goals = np.arange(m.shape[0])
+    total = goals[:, None] + goals[None, :]          # total goals for each cell
+    p_home_goals = m.sum(axis=1)                       # distribution of home goals
+    p_away_goals = m.sum(axis=0)                       # distribution of away goals
+    out = {
+        "exp_total_goals": float((m * total).sum()),
+        "p_btts": float(m[1:, 1:].sum()),              # both teams score at least once
+    }
+    for line in (1.5, 2.5, 3.5):
+        key = str(line).replace(".", "_")
+        out[f"p_over_{key}"] = float(m[total > line].sum())
+        out[f"p_under_{key}"] = 1.0 - out[f"p_over_{key}"]
+    for side, dist in (("home", p_home_goals), ("away", p_away_goals)):
+        out[f"p_{side}_over_0_5"] = float(1 - dist[0])         # team scores at least once
+        out[f"p_{side}_over_1_5"] = float(1 - dist[:2].sum())  # team scores 2+
+    out["p_home_clean_sheet"] = float(p_away_goals[0])
+    out["p_away_clean_sheet"] = float(p_home_goals[0])
+    out["p_home_or_draw"] = float(np.tril(m).sum())
+    out["p_away_or_draw"] = float(np.triu(m).sum())
+    return out
+
+
 @dataclass
 class PoissonModel:
     teams: list[str]
@@ -62,7 +90,7 @@ class PoissonModel:
         m = self.score_matrix(home_team, away_team).values
         lam_h, lam_a = self.expected_goals(home_team, away_team)
         i, j = np.unravel_index(m.argmax(), m.shape)
-        return {
+        out = {
             "home_team": home_team,
             "away_team": away_team,
             "exp_home_goals": lam_h,
@@ -73,6 +101,8 @@ class PoissonModel:
             "most_likely_score": f"{i}-{j}",
             "p_most_likely_score": float(m[i, j]),
         }
+        out.update(markets_from_matrix(m))
+        return out
 
     def predict_fixtures(self, fixtures: pd.DataFrame) -> pd.DataFrame:
         """fixtures needs HomeTeam and AwayTeam columns."""
