@@ -17,7 +17,9 @@ BIG_SIX = ["Arsenal", "Chelsea", "Liverpool", "Man City", "Man United", "Tottenh
 
 # Columns we keep. Odds columns are optional (not every season has every bookmaker).
 CORE_COLS = ["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR"]
-ODDS_PREFIXES = ["PS", "B365", "Avg"]  # Pinnacle, Bet365, market average
+ODDS_PREFIXES = ["PS", "B365", "Avg"]  # Pinnacle, Bet365, market average (match result)
+# Over/under 2.5 goals odds: Pinnacle uses the prefix "P" here (not "PS")
+OU_COLS = ["P>2.5", "P<2.5", "B365>2.5", "B365<2.5", "Avg>2.5", "Avg<2.5"]
 
 
 def season_code(start_year: int) -> str:
@@ -38,6 +40,7 @@ def load_season(start_year: int) -> pd.DataFrame:
     raw = pd.read_csv(url, encoding="latin1", on_bad_lines="skip")
 
     odds_cols = [f"{p}{o}" for p in ODDS_PREFIXES for o in "HDA" if f"{p}{o}" in raw.columns]
+    odds_cols += [c for c in OU_COLS if c in raw.columns]
     df = raw[[c for c in CORE_COLS if c in raw.columns] + odds_cols].copy()
 
     df = df.dropna(subset=["HomeTeam", "AwayTeam", "FTHG", "FTAG"])  # drop blank / unplayed rows
@@ -85,7 +88,8 @@ def load_fixtures() -> pd.DataFrame:
     if "Div" not in fx.columns:
         raise ValueError(f"Unexpected fixtures file format. Columns: {fx.columns.tolist()[:8]}")
     fx = fx[fx["Div"] == LEAGUE].copy()
-    keep = ["Date", "Time", "HomeTeam", "AwayTeam"] + [c for c in ["B365H", "B365D", "B365A"] if c in fx.columns]
+    keep = ["Date", "Time", "HomeTeam", "AwayTeam"] + [
+        c for c in ["B365H", "B365D", "B365A", "B365>2.5", "B365<2.5"] if c in fx.columns]
     fx = fx[[c for c in keep if c in fx.columns]]
     fx["Date"] = pd.to_datetime(fx["Date"], dayfirst=True, errors="coerce")
     fx["HomeTeam"] = fx["HomeTeam"].str.strip()
