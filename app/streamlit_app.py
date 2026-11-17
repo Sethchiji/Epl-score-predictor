@@ -72,17 +72,24 @@ with tab0:
         if {"B365H", "B365D", "B365A"}.issubset(fx.columns):
             inv = 1 / fx.loc[known, ["B365H", "B365D", "B365A"]].astype(float)
             table["bookie_home"] = (inv["B365H"] / inv.sum(axis=1)).values
+        if {"B365>2.5", "B365<2.5"}.issubset(fx.columns):
+            inv_o = 1 / fx.loc[known, "B365>2.5"].astype(float)
+            inv_u = 1 / fx.loc[known, "B365<2.5"].astype(float)
+            table["bookie_over"] = (inv_o / (inv_o + inv_u)).values
         table["big_six"] = table["home_team"].isin(BIG_SIX) | table["away_team"].isin(BIG_SIX)
         only_big6 = st.toggle("Big Six matches only", value=False)
         if only_big6:
             table = table[table["big_six"]]
         cols = ["Date"] + (["Time"] if "Time" in table.columns else []) + [
-            "home_team", "away_team", "p_home", "p_draw", "p_away", "most_likely_score"]
+            "home_team", "away_team", "p_home", "p_draw", "p_away", "p_over_2_5", "p_btts", "most_likely_score"]
         labels = {"home_team": "Home", "away_team": "Away", "p_home": "Home win", "p_draw": "Draw",
-                  "p_away": "Away win", "most_likely_score": "Most likely score"}
-        if "bookie_home" in table.columns:
-            cols.append("bookie_home")
-        fmt = {c: "{:.0%}" for c in ["p_home", "p_draw", "p_away", "bookie_home"] if c in cols}
+                  "p_away": "Away win", "p_over_2_5": "Over 2.5", "p_btts": "BTTS",
+                  "most_likely_score": "Most likely score"}
+        for extra in ("bookie_home", "bookie_over"):
+            if extra in table.columns:
+                cols.append(extra)
+        fmt = {c: "{:.0%}" for c in ["p_home", "p_draw", "p_away", "p_over_2_5", "p_btts",
+                                     "bookie_home", "bookie_over"] if c in cols}
         fmt["Date"] = lambda d: d.strftime("%a %d %b")
         st.dataframe(
             table[cols].style.format(fmt).apply(
@@ -90,10 +97,12 @@ with tab0:
             width="stretch", hide_index=True,
             column_config={**{k: st.column_config.Column(v) for k, v in labels.items()},
                            "bookie_home": st.column_config.Column("Bet365 home %",
-                           help="Bet365's home-win probability (margin removed), for comparison")},
+                           help="Bet365's home-win probability (margin removed), for comparison"),
+                           "bookie_over": st.column_config.Column("Bet365 over 2.5 %",
+                           help="Bet365's over 2.5 goals probability (margin removed), for comparison")},
         )
         st.caption("**Bold** = Big Six involved. Probabilities are model predictions; "
-                   "the last column shows Bet365's implied home-win chance for comparison.")
+                   "the Bet365 columns show the bookmaker's implied chances (margin removed) for comparison.")
         if (~known).any():
             st.caption("Skipped (team not in training data): " +
                        ", ".join(f"{h} vs {a}" for h, a in zip(fx.loc[~known, "HomeTeam"], fx.loc[~known, "AwayTeam"])))
@@ -102,11 +111,12 @@ with tab1:
     st.subheader("Every Big Six fixture, predicted")
     fixtures = pd.DataFrame(list(permutations(big_six, 2)), columns=["HomeTeam", "AwayTeam"])
     preds = model.predict_fixtures(fixtures)
-    show = preds[["home_team", "away_team", "p_home", "p_draw", "p_away",
+    show = preds[["home_team", "away_team", "p_home", "p_draw", "p_away", "p_over_2_5", "p_btts",
                   "exp_home_goals", "exp_away_goals", "most_likely_score"]].copy()
-    show.columns = ["Home", "Away", "Home win", "Draw", "Away win", "Exp. home goals", "Exp. away goals", "Most likely score"]
+    show.columns = ["Home", "Away", "Home win", "Draw", "Away win", "Over 2.5", "BTTS",
+                    "Exp. home goals", "Exp. away goals", "Most likely score"]
     st.dataframe(
-        show.style.format({c: "{:.0%}" for c in ["Home win", "Draw", "Away win"]}
+        show.style.format({c: "{:.0%}" for c in ["Home win", "Draw", "Away win", "Over 2.5", "BTTS"]}
                           | {c: "{:.2f}" for c in ["Exp. home goals", "Exp. away goals"]}),
         width="stretch", hide_index=True,
     )
@@ -134,6 +144,28 @@ with tab2:
     fig = px.imshow(mat, text_auto=".1%", color_continuous_scale="Greens", aspect="auto",
                     labels={"x": f"{away} goals", "y": f"{home} goals", "color": "Probability"})
     st.plotly_chart(fig, width="stretch")
+
+    st.markdown("##### Goals markets")
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Both teams score", f"{p['p_btts']:.0%}")
+    g2.metric("Over 2.5 goals", f"{p['p_over_2_5']:.0%}")
+    g3.metric("Expected total goals", f"{p['exp_total_goals']:.2f}")
+    g4.metric("Double chance (home or draw)", f"{p['p_home_or_draw']:.0%}")
+    markets = pd.DataFrame({
+        "Market": ["Over 1.5 goals", "Over 2.5 goals", "Over 3.5 goals", "Both teams to score",
+                   f"{home} to score", f"{home} 2+ goals", f"{home} clean sheet",
+                   f"{away} to score", f"{away} 2+ goals", f"{away} clean sheet",
+                   f"{home} or draw", f"{away} or draw"],
+        "Probability": [p["p_over_1_5"], p["p_over_2_5"], p["p_over_3_5"], p["p_btts"],
+                        p["p_home_over_0_5"], p["p_home_over_1_5"], p["p_home_clean_sheet"],
+                        p["p_away_over_0_5"], p["p_away_over_1_5"], p["p_away_clean_sheet"],
+                        p["p_home_or_draw"], p["p_away_or_draw"]],
+    })
+    markets["Fair odds"] = 1 / markets["Probability"]
+    st.dataframe(markets.style.format({"Probability": "{:.0%}", "Fair odds": "{:.2f}"}),
+                 width="stretch", hide_index=True)
+    st.caption("Fair odds = 1 / probability, with no bookmaker margin. These are model estimates, not betting advice: "
+               "see the README for how the model compares with bookmaker odds.")
 
 with tab3:
     st.subheader("Team strength ratings")
