@@ -64,7 +64,8 @@ def backtest(matches: pd.DataFrame, test_season: str, xi: float = DEFAULT_XI,
                     "actual_score": f"{m['FTHG']}-{m['FTAG']}",
                 })
                 for col in m.index:
-                    if col[:-1] in ("PS", "B365", "Avg") and col[-1] in "HDA":
+                    is_result_odds = col[:-1] in ("PS", "B365", "Avg") and col[-1] in "HDA"
+                    if is_result_odds or "2.5" in col:   # match-result and over/under 2.5 odds
                         pred[col] = m[col]
                 rows.append(pred)
         window_start = window_end
@@ -95,4 +96,57 @@ def compare(bt: pd.DataFrame, train_matches: pd.DataFrame | None = None) -> pd.D
     table = pd.DataFrame(out).T
     table["exact_score_hit_rate"] = np.nan
     table.loc["Poisson model", "exact_score_hit_rate"] = float((bt["most_likely_score"] == bt["actual_score"]).mean())
+    return table.round(4)
+
+
+# ------------------------------------------------------------------ yes/no markets
+def _binary_metrics(p: pd.Series, y: pd.Series) -> dict:
+    """Log loss, Brier and accuracy for a yes/no market (y = 1 if it happened)."""
+    p = np.clip(p.astype(float).to_numpy(), 1e-12, 1 - 1e-12)
+    y = y.astype(float).to_numpy()
+    return {
+        "log_loss": float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p))),
+        "brier": float(np.mean((p - y) ** 2)),
+        "accuracy": float(np.mean((p > 0.5) == (y == 1))),
+        "n_matches": int(len(y)),
+    }
+
+
+def compare_totals(bt: pd.DataFrame, train_matches: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Score over 2.5 goals and BTTS predictions against a baseline and (for over/under) the bookmakers.
+
+    Baseline = always predict the historical rate from the training seasons.
+    Bookmaker rows use only matches where those odds exist, and the model is re-scored
+    on exactly the same matches so the comparison is fair.
+    """
+    total = bt["FTHG"] + bt["FTAG"]
+    over = (total > 2.5).astype(int)
+    btts = ((bt["FTHG"] > 0) & (bt["FTAG"] > 0)).astype(int)
+
+    if train_matches is not None and not train_matches.empty:
+        t_total = train_matches["FTHG"] + train_matches["FTAG"]
+        base_over = float((t_total > 2.5).mean())
+        base_btts = float(((train_matches["FTHG"] > 0) & (train_matches["FTAG"] > 0)).mean())
+    else:
+        base_over, base_btts = 0.5, 0.5
+
+    rows = {}
+    rows[("Over 2.5", "Poisson model")] = _binary_metrics(bt["p_over_2_5"], over)
+    rows[("Over 2.5", "Baseline (historical rate)")] = _binary_metrics(pd.Series(base_over, index=bt.index), over)
+    for prefix, name in [("P", "Pinnacle"), ("B365", "Bet365"), ("Avg", "Market average")]:
+        o, u = f"{prefix}>2.5", f"{prefix}<2.5"
+        if o in bt.columns and u in bt.columns:
+            ok = bt[[o, u]].notna().all(axis=1)
+            if ok.sum() > 0:
+                inv_o, inv_u = 1 / bt.loc[ok, o].astype(float), 1 / bt.loc[ok, u].astype(float)
+                rows[("Over 2.5", f"{name} odds")] = _binary_metrics(inv_o / (inv_o + inv_u), over[ok])
+                if ok.sum() < len(bt):   # odds missing for some matches: re-score model on the same ones
+                    rows[("Over 2.5", f"Poisson model (same {int(ok.sum())} matches as {name})")] = \
+                        _binary_metrics(bt.loc[ok, "p_over_2_5"], over[ok])
+    rows[("BTTS", "Poisson model")] = _binary_metrics(bt["p_btts"], btts)
+    rows[("BTTS", "Baseline (historical rate)")] = _binary_metrics(pd.Series(base_btts, index=bt.index), btts)
+
+    table = pd.DataFrame(rows).T
+    table.index.names = ["market", "predictor"]
+    table["n_matches"] = table["n_matches"].astype(int)
     return table.round(4)
